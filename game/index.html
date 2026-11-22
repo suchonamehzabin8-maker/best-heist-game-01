@@ -2,57 +2,38 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>The Gilded Vault</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="data:,">
-<title>The Gilded Vault — a museum heist game</title>
 <style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    background: #07090f;
-    color: #e8ecf5;
-    font-family: sans-serif;
-  }
-  body {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    overflow: hidden;
-  }
-  #game {
-    display: block;
-    width: 1280px;
-    height: 720px;
-    max-width: 100vw;
-    max-height: 100vh;
-    background: #0b0e17;
-  }
-  .hint {
-    margin-top: 10px;
-    font-size: 13px;
-    color: #8a94ad;
-    text-align: center;
-  }
-  @media (max-height: 780px) {
-    /* Short windows show the canvas alone, with no page scrollbar. */
-    .hint {
-      display: none;
-    }
-  }
+  html, body { margin: 0; padding: 0; background: #07090f; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; font-family: sans-serif; }
+  #wrap { text-align: center; }
+  canvas { display: block; background: #141824; max-width: 100vw; max-height: 100vh; }
+  #selftest { color: #9aa2b5; font: 12px monospace; white-space: pre; text-align: left; }
+  #console-errors { color: #ff6b60; font: 12px monospace; white-space: pre; text-align: left; }
 </style>
 </head>
 <body>
-<canvas id="game" width="1280" height="720"></canvas>
-<p class="hint">WASD / arrows to move &middot; SHIFT to sneak &middot; hold E to pick the gem lock &middot; Q smoke &middot; F toss a coin &middot; M mute &middot; R restart</p>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+  <div id="selftest"></div>
+  <div id="console-errors"></div>
+</div>
+<script>
+  // Surface any page error into the DOM so a headless run can see it.
+  window.addEventListener('error', function (e) {
+    var n = document.getElementById('console-errors');
+    if (n) n.textContent += 'ERROR: ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '') + '\n';
+  });
+</script>
 <script src="src/config.js"></script>
-<script src="src/input.js"></script>
+<script src="src/random.js"></script>
 <script src="src/world.js"></script>
 <script src="src/guards.js"></script>
 <script src="src/cameras.js"></script>
 <script src="src/alarm.js"></script>
 <script src="src/tools.js"></script>
+<script src="src/input.js"></script>
 <script src="src/audio.js"></script>
 <script src="src/render.js"></script>
 <script src="src/shots.js"></script>
