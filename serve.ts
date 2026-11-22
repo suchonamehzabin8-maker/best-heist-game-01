@@ -1,15 +1,17 @@
-// The Gilded Vault — local playtest server.
-// Serves game/ on http://localhost:8080 with no dependencies.
-// Run: node serve.ts   then open http://localhost:8080 in a browser.
+// The Gilded Vault — a tiny static server for local playtesting.
+// Serves game/ with no network dependency.
+//
+//   node serve.ts [port]   (default 8123)
+
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), 'game');
-const port = Number(process.env.PORT ?? 8080);
+const root = resolve(dirname(fileURLToPath(import.meta.url)));
+const port = Number(process.argv[2] ?? 8123);
 
-const mimeTypes: Record<string, string> = {
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -20,20 +22,16 @@ const mimeTypes: Record<string, string> = {
   '.jpeg': 'image/jpeg',
 };
 
-const server = createServer((req, res) => {
-  const urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
-  const rel = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
-  const file = join(root, rel);
-  if (!file.startsWith(root) || !existsSync(file)) {
-    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+createServer((req, res) => {
+  const url = decodeURIComponent((req.url ?? '/').split('?')[0]);
+  const path = normalize(join(root, 'game', url === '/' ? 'index.html' : url));
+  if (!path.startsWith(join(root, 'game')) || !existsSync(path) || !statSync(path).isFile()) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('not found\n');
     return;
   }
-  const body = readFileSync(file);
-  res.writeHead(200, { 'content-type': mimeTypes[extname(file)] ?? 'application/octet-stream' });
-  res.end(body);
-});
-
-server.listen(port, () => {
-  console.log(`The Gilded Vault served at http://localhost:${port}`);
+  res.writeHead(200, { 'content-type': MIME[extname(path).toLowerCase()] ?? 'application/octet-stream' });
+  createReadStream(path).pipe(res);
+}).listen(port, () => {
+  console.log(`serving game/ at http://localhost:${port}/`);
 });

@@ -4,58 +4,46 @@
 
 # The Gilded Vault
 
-A top-down 2D stealth heist game. One night at the Meridian Museum:
-cross the gallery, steal the Meridian Star gem from its locked glass
-case, and reach the getaway door — without letting a guard or a
-camera fill the alarm meter.
+A top-down 2D stealth heist game. One museum gallery at night, one thief, the
+Meridian Star gem in a locked glass case, three patrolling guards with sweeping
+vision cones, two wall cameras, and an alarm meter that decides everything.
 
-Play it at the [make.fun bounty page](https://make.fun/bounty/best-heist-game-20261122-0559).
+[Play the entry on make.fun](https://make.fun/bounty/best-heist-game-20261122-0559)
 
 ## How to play
 
-- **WASD / arrow keys** — move the thief
-- **SHIFT** — sneak (slower, harder to spot)
-- **E (hold)** — pick the gem case lock (takes 3 seconds, and the clicks are loud)
-- **Q** — smoke pellet (blocks every vision cone for 5 seconds, 3 per heist)
-- **F** — toss a coin toward the mouse (the nearest guard goes to look, 3 per heist)
-- **M** — mute sound, **R** — restart after a catch or a getaway, **ENTER** — start
+- **WASD / arrows** — move. **Shift** — sneak (slower, harder to spot).
+- **Hold E** by the gem case — pick the lock (3 seconds, makes noise and draws
+  the nearest guard over to look).
+- **Q** — smoke pellet (3): blocks sight in a small radius for a few seconds.
+- **F or click** — toss a coin (5): the nearest guard walks over to investigate
+  where it lands.
+- **The vent** along the top wall is a slow, hidden crawl to the gem — and it is
+  one-way: you can slip in through the left grate, but you cannot crawl back
+  out that way.
+- A guard or camera that spots you opens a short **SPOTTED!** grace window:
+  break line of sight in time and the alarm never rises. Once the alarm
+  reaches 100, the gallery doors slam shut and you are caught.
+- Grab the gem, then reach the **GETAWAY** door. Score: $50,000 loot, a time
+  bonus, and a $10,000 ghost bonus if you were never spotted.
 
-## The heist
+## Routes
 
-Three routes cross the gallery: the **main hall** (patrolled by two
-guards), the **camera corridor** on the east side (two sweeping red
-cones and the Jade Statue), and the **vent crawl** along the top wall
-(hidden from every cone, but slow). Guards walk fixed patrol routes
-with pauses, looking around as they go; cameras sweep on a timer.
-Being seen fills the alarm — break line of sight before it reaches
-100, or the museum locks down and the heist is over.
+- **Main hall** — patrolled, fastest.
+- **Side corridor** (right) — camera-covered, quieter.
+- **Vent crawl** — hidden and slow, straight to the gem.
 
-Score: the Meridian Star ($50,000) plus pocketed loot, a time bonus,
-and a ghost bonus for never being spotted.
-
-## Play locally
+## Run it
 
 ```sh
-node serve.ts
-# open http://localhost:8080
+node serve.ts        # serves game/ at http://localhost:8123/
 ```
 
-## Layout
+Or hand it in:
 
-- `game/index.html` — page, canvas, HUD
-- `game/src/config.js` — tuning numbers (speeds, cone angles, alarm rates, tool counts)
-- `game/src/input.js` — keyboard + mouse input
-- `game/src/world.js` — room layout, walls, cover, loot, collision, line of sight
-- `game/src/guards.js` — guard patrols, vision cones, investigation
-- `game/src/cameras.js` — camera sweeps and vision
-- `game/src/alarm.js` — alarm meter, SPOTTED! grace window, caught logic
-- `game/src/tools.js` — lockpick, smoke pellet, coin toss
-- `game/src/audio.js` — WebAudio sounds (no audio files)
-- `game/src/render.js` — all canvas drawing
-- `game/src/shots.js` — scripted screenshot states (`?shot=cover` and friends)
-- `game/src/main.js` — game loop and state machine
-- `main.ts` — builds `/output` (game + screenshots + dossier.json)
-- `serve.ts` — static server for playtesting
+```sh
+MAKEFUN_OUTPUT_DIR=out node main.ts
+```
 
-All art is drawn shapes and all sounds are WebAudio tones made in
-code — no borrowed assets. MIT licensed.
+Node 22 standard library only; the game itself is static files under `game/`
+with no build step and no network requests. Sounds are WebAudio bleeps.
