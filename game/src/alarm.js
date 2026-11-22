@@ -1,66 +1,48 @@
-'use strict';
-/* The alarm meter: it rises while any guard or camera sees the thief
-   and decays slowly when unseen. Crossing the spotted threshold puts
-   up the SPOTTED! warning and starts the grace window — break line of
-   sight before the meter fills, or the heist is over. */
-var GV = window.GV || (window.GV = {});
+// The Gilded Vault — the alarm meter. A viewer that spots the thief
+// starts a short "SPOTTED!" grace window; break line of sight in time and
+// the alarm never rises. Once the grace runs out while seen, the alarm
+// climbs; at 100 the thief is caught. Unseen, the alarm slowly decays.
 
-GV.alarm = (function () {
-  var C = GV.config;
+function updateAlarm(dt, seenByGuard, seenByCamera) {
+  if (S.state !== 'playing') return;
+  const seen = seenByGuard || seenByCamera;
+  // The grace window opens only on the unseen -> seen transition, so a
+  // viewer that keeps watching does not keep re-opening it.
+  const newlySeen = seen && !S.wasSeen;
+  S.wasSeen = seen;
 
-  function createAlarm() {
-    return {
-      value: 0,
-      spotted: false,
-      everSpotted: false,
-      caught: false,
-      /* How long the thief has been seen without a break. */
-      seenStreak: 0,
-    };
+  if (newlySeen && S.alarm < 100) {
+    // First sight: open the grace window.
+    S.graceActive = true;
+    S.grace = CFG.graceTime;
+    S.message = 'SPOTTED! Break line of sight!';
+    S.messageT = CFG.graceTime;
   }
 
-  function updateAlarm(alarm, seen, sneaking, dt) {
-    if (seen) {
-      var rate = C.alarmRisePerSec * (sneaking ? C.sneakDetectionFactor : 1);
-      alarm.value += rate * dt;
-      alarm.seenStreak += dt;
-      if (alarm.value >= C.spottedThreshold) {
-        alarm.spotted = true;
-        alarm.everSpotted = true;
-      }
-    } else {
-      alarm.seenStreak = 0;
-      alarm.value -= C.alarmDecayPerSec * dt;
-      if (alarm.value <= 0) {
-        alarm.value = 0;
-        alarm.spotted = false;
-      } else if (alarm.value < C.spottedThreshold) {
-        alarm.spotted = false;
-      }
-    }
-    if (alarm.value >= C.caughtThreshold) {
-      alarm.value = C.caughtThreshold;
-      alarm.caught = true;
+  if (S.graceActive) {
+    S.grace -= dt;
+    if (!seen) {
+      // Got away clean inside the grace window: no alarm, no ghost lost.
+      S.graceActive = false;
+      S.grace = 0;
+      S.message = 'Lost them…';
+      S.messageT = 1.2;
+    } else if (S.grace <= 0) {
+      S.graceActive = false;
+      S.spotted = true;
+      S.ghost = false;
     }
   }
 
-  function resetAlarm(alarm) {
-    alarm.value = 0;
-    alarm.spotted = false;
-    alarm.everSpotted = false;
-    alarm.caught = false;
-    alarm.seenStreak = 0;
+  if (seen && !S.graceActive) {
+    const rate = seenByGuard ? CFG.alarmRiseGuard : CFG.alarmRiseCamera;
+    S.alarm = Math.min(100, S.alarm + rate * dt);
+  } else if (!seen) {
+    S.alarm = Math.max(0, S.alarm - CFG.alarmDecay * dt);
   }
 
-  /* 0 green, 1 red — for the meter's colour and the screen's edge glow. */
-  function dangerLevel(alarm) {
-    return alarm.value / C.caughtThreshold;
+  if (S.alarm >= 100) {
+    S.state = 'caught';
+    S.message = '';
   }
-
-  return {
-    createAlarm: createAlarm,
-    updateAlarm: updateAlarm,
-    resetAlarm: resetAlarm,
-    dangerLevel: dangerLevel,
-  };
-})();
+}

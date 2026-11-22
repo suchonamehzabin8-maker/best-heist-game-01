@@ -1,171 +1,150 @@
-'use strict';
-/* The museum guards: fixed patrol routes with pauses, sweeping
-   vision cones, and the hearing that sends them to investigate a
-   noise — a lockpick's clicks or a tossed coin. */
-var GV = window.GV || (window.GV = {});
+// The Gilded Vault — guards: fixed patrol routes with pauses, sweeping
+// vision cones, and investigation when they hear a noise.
 
-GV.guards = (function () {
-  var C = GV.config;
+function makeGuards() {
+  return [
+    {
+      name: 'Rook',
+      route: [
+        { x: 280, y: 290 },
+        { x: 1000, y: 290 },
+        { x: 1000, y: 390 },
+        { x: 280, y: 390 },
+      ],
+      speed: 72,
+      pause: 1.2,
+      wp: 0,
+      x: 280,
+      y: 290,
+      dir: 0,
+      wait: 0,
+      scan: 0,
+      investigate: null, // {x, y} or null
+      lookT: 0,
+    },
+    {
+      name: 'Bishop',
+      route: [
+        { x: 480, y: 160 },
+        { x: 920, y: 160 },
+        { x: 920, y: 280 },
+        { x: 480, y: 280 },
+      ],
+      speed: 82,
+      pause: 0.8,
+      wp: 0,
+      x: 480,
+      y: 160,
+      dir: 0,
+      wait: 0,
+      scan: 0,
+      investigate: null,
+      lookT: 0,
+    },
+    {
+      name: 'Knight',
+      route: [
+        { x: 300, y: 580 },
+        { x: 1000, y: 580 },
+      ],
+      speed: 62,
+      pause: 1.5,
+      wp: 0,
+      x: 300,
+      y: 580,
+      dir: 0,
+      wait: 0,
+      scan: 0,
+      investigate: null,
+      lookT: 0,
+    },
+  ];
+}
 
-  function makeGuard(name, waypoints, pauseSeconds) {
-    return {
-      name: name,
-      x: waypoints[0].x,
-      y: waypoints[0].y,
-      waypoints: waypoints,
-      waypointIndex: 1,
-      pauseSeconds: pauseSeconds,
-      pauseLeft: 0,
-      facing: 0,
-      lookPhase: Math.random() * Math.PI * 2,
-      /* 'patrol' | 'investigate' | 'return' */
-      mode: 'patrol',
-      investigateX: 0,
-      investigateY: 0,
-      investigateLeft: 0,
-    };
-  }
+// A guard walks to (tx, ty) at its speed; returns true when it arrives.
+function guardStepTo(g, tx, ty, dt) {
+  const dx = tx - g.x;
+  const dy = ty - g.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 2) return true;
+  const step = Math.min(d, g.speed * dt);
+  g.x += (dx / d) * step;
+  g.y += (dy / d) * step;
+  g.dir = Math.atan2(dy, dx);
+  return d <= g.speed * dt + 2;
+}
 
-  function createGuards() {
-    return [
-      makeGuard('Marlow', [
-        { x: 300, y: 430 }, { x: 640, y: 430 }, { x: 980, y: 430 },
-        { x: 980, y: 300 }, { x: 640, y: 300 }, { x: 300, y: 300 },
-      ], 1.6),
-      makeGuard('Petra', [
-        { x: 180, y: 520 }, { x: 180, y: 200 }, { x: 420, y: 200 }, { x: 420, y: 520 },
-      ], 1.2),
-      makeGuard('Odo', [
-        { x: 1150, y: 240 }, { x: 1150, y: 600 },
-      ], 2.0),
-    ];
-  }
-
-  /* Send the nearest guard on patrol to look at a point. */
-  function alertNearest(guards, x, y, maxDistance) {
-    var best = null;
-    var bestDist = maxDistance;
-    for (var i = 0; i < guards.length; i++) {
-      var g = guards[i];
-      if (g.mode !== 'patrol') continue;
-      var dx = g.x - x;
-      var dy = g.y - y;
-      var d = Math.sqrt(dx * dx + dy * dy);
-      if (d < bestDist) {
-        bestDist = d;
-        best = g;
-      }
-    }
-    if (best) {
-      best.mode = 'investigate';
-      best.investigateX = x;
-      best.investigateY = y;
-      best.investigateLeft = C.guardInvestigateSeconds;
-    }
-    return best;
-  }
-
-  function moveToward(g, tx, ty, dt) {
-    var dx = tx - g.x;
-    var dy = ty - g.y;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 2) return true;
-    var step = C.guardSpeed * dt;
-    if (step >= dist) {
-      g.x = tx;
-      g.y = ty;
-      return true;
-    }
-    g.x += (dx / dist) * step;
-    g.y += (dy / dist) * step;
-    g.facing = Math.atan2(dy, dx);
-    return false;
-  }
-
-  function updateGuard(g, dt, time) {
-    if (g.mode === 'investigate') {
-      if (moveToward(g, g.investigateX, g.investigateY, dt)) {
-        /* Arrived: look around for a while. */
-        g.investigateLeft -= dt;
-        g.facing += Math.sin(time * 1.4 + g.lookPhase) * dt * 1.6;
-        if (g.investigateLeft <= 0) {
-          g.mode = 'return';
+function updateGuards(dt) {
+  for (const g of S.guards) {
+    if (g.investigate) {
+      const arrived = guardStepTo(g, g.investigate.x, g.investigate.y, dt);
+      if (arrived) {
+        g.lookT += dt;
+        // Look around for a couple of seconds, then go back on patrol.
+        g.dir += Math.sin(S.t * 2.2) * 0.9 * dt;
+        if (g.lookT > 2.2) {
+          g.investigate = null;
+          g.lookT = 0;
+          // Resume at the nearest waypoint.
+          let best = 0;
+          let bestD = Infinity;
+          g.route.forEach((w, i) => {
+            const d = Math.hypot(w.x - g.x, w.y - g.y);
+            if (d < bestD) { bestD = d; best = i; }
+          });
+          g.wp = best;
         }
       }
-      return;
+      continue;
     }
-    if (g.mode === 'return') {
-      /* Walk back to the nearest waypoint, then resume the patrol. */
-      var best = 0;
-      var bestDist = Infinity;
-      for (var i = 0; i < g.waypoints.length; i++) {
-        var w = g.waypoints[i];
-        var d = (w.x - g.x) * (w.x - g.x) + (w.y - g.y) * (w.y - g.y);
-        if (d < bestDist) {
-          bestDist = d;
-          best = i;
-        }
-      }
-      if (moveToward(g, g.waypoints[best].x, g.waypoints[best].y, dt)) {
-        g.waypointIndex = (best + 1) % g.waypoints.length;
-        g.mode = 'patrol';
-      }
-      return;
+    if (g.wait > 0) {
+      g.wait -= dt;
+      // Scan: sweep the head slowly while paused.
+      g.scan += dt;
+      g.dir += Math.sin(g.scan * 1.6) * 0.55 * dt;
+      continue;
     }
-    /* Patrol: walk the waypoints, pausing and looking around at each. */
-    if (g.pauseLeft > 0) {
-      g.pauseLeft -= dt;
-      g.facing += Math.sin(time * 1.1 + g.lookPhase) * dt * 1.1;
-      return;
-    }
-    var target = g.waypoints[g.waypointIndex];
-    if (moveToward(g, target.x, target.y, dt)) {
-      g.waypointIndex = (g.waypointIndex + 1) % g.waypoints.length;
-      g.pauseLeft = g.pauseSeconds;
+    const target = g.route[g.wp];
+    const arrived = guardStepTo(g, target.x, target.y, dt);
+    if (arrived) {
+      g.wait = g.pause;
+      g.scan = 0;
+      g.wp = (g.wp + 1) % g.route.length;
     }
   }
+}
 
-  function updateGuards(guards, dt, time) {
-    for (var i = 0; i < guards.length; i++) updateGuard(guards[i], dt, time);
+// The guard's current cone direction: facing, plus a slow sweep while walking.
+function guardConeDir(g) {
+  return g.dir + Math.sin(S.t * 0.9 + g.x * 0.01) * 0.18;
+}
+
+// Can this guard see the thief right now?
+function guardSees(g) {
+  const p = S.player;
+  if (p.inVent) return false;
+  const dx = p.x - g.x;
+  const dy = p.y - g.y;
+  const d = Math.hypot(dx, dy);
+  const range = CFG.guardRange * (p.sneaking ? CFG.sneakRangeMul : 1);
+  if (d > range) return false;
+  const ang = Math.atan2(dy, dx);
+  if (Math.abs(angleDiff(ang, guardConeDir(g))) > CFG.guardHalfAngle) return false;
+  if (!losClear(g.x, g.y, p.x, p.y)) return false;
+  if (blockedBySmoke(g.x, g.y, p.x, p.y)) return false;
+  return true;
+}
+
+// Send the nearest guard to look at a noise at (x, y).
+function nearestGuardInvestigates(x, y) {
+  let best = null;
+  let bestD = Infinity;
+  for (const g of S.guards) {
+    const d = Math.hypot(g.x - x, g.y - y);
+    if (d < bestD) { bestD = d; best = g; }
   }
-
-  function angleDiff(a, b) {
-    var d = a - b;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    return Math.abs(d);
+  if (best) {
+    best.investigate = { x, y };
+    best.lookT = 0;
   }
-
-  /* Can this guard see the thief right now? */
-  function guardSeesThief(g, thiefX, thiefY, inSmoke, inVent) {
-    if (inVent || inSmoke) return false;
-    var dx = thiefX - g.x;
-    var dy = thiefY - g.y;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > C.guardConeRange) return false;
-    if (angleDiff(Math.atan2(dy, dx), g.facing) > C.guardConeHalfAngle) return false;
-    return !GV.world.lineBlocked(g.x, g.y, thiefX, thiefY);
-  }
-
-  function resetGuards(guards) {
-    var fresh = createGuards();
-    for (var i = 0; i < guards.length; i++) {
-      var f = fresh[i];
-      guards[i].x = f.x;
-      guards[i].y = f.y;
-      guards[i].waypointIndex = f.waypointIndex;
-      guards[i].pauseLeft = 0;
-      guards[i].facing = f.facing;
-      guards[i].mode = 'patrol';
-    }
-  }
-
-  return {
-    createGuards: createGuards,
-    updateGuards: updateGuards,
-    guardSeesThief: guardSeesThief,
-    alertNearest: alertNearest,
-    resetGuards: resetGuards,
-    angleDiff: angleDiff,
-  };
-})();
+}

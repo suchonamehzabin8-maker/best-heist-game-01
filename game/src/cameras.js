@@ -1,54 +1,44 @@
-'use strict';
-/* The security cameras: wall-mounted, sweeping their red cones on a
-   timer. A camera that spots the thief feeds the alarm just like a
-   guard does. */
-var GV = window.GV || (window.GV = {});
+// The Gilded Vault — wall-mounted security cameras: fixed positions,
+// sweeping red cones on a timer.
 
-GV.cameras = (function () {
-  var C = GV.config;
+function makeCameras() {
+  return [
+    {
+      name: 'Cam 1',
+      x: 1212,
+      y: 300,
+      base: Math.PI, // faces left, down the side corridor
+      amp: 0.85,
+      period: 6,
+      phase: 0,
+    },
+    {
+      name: 'Cam 2',
+      x: 180,
+      y: 58,
+      base: Math.PI / 3, // faces down-right, over the entrance hall
+      amp: 0.7,
+      period: 8,
+      phase: 2.1,
+    },
+  ];
+}
 
-  function makeCamera(x, y, baseAngle, phase) {
-    return {
-      x: x,
-      y: y,
-      baseAngle: baseAngle,
-      sweepHalfAngle: 0.75,
-      phase: phase,
-      angle: baseAngle,
-      blink: 0,
-    };
-  }
+function cameraDir(c) {
+  return c.base + c.amp * Math.sin((S.t * Math.PI * 2) / c.period + c.phase);
+}
 
-  function createCameras() {
-    return [
-      makeCamera(1252, 250, Math.PI, 0),
-      makeCamera(1252, 540, Math.PI, 1.7),
-    ];
-  }
-
-  function updateCameras(cameras, time) {
-    for (var i = 0; i < cameras.length; i++) {
-      var cam = cameras[i];
-      var t = (time / C.cameraSweepPeriod) * Math.PI * 2 + cam.phase;
-      cam.angle = cam.baseAngle + Math.sin(t) * cam.sweepHalfAngle;
-      cam.blink = (Math.sin(time * 5 + i * 2) + 1) / 2;
-    }
-  }
-
-  /* Can this camera see the thief right now? */
-  function cameraSeesThief(cam, thiefX, thiefY, inSmoke, inVent) {
-    if (inVent || inSmoke) return false;
-    var dx = thiefX - cam.x;
-    var dy = thiefY - cam.y;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > C.cameraConeRange) return false;
-    if (GV.guards.angleDiff(Math.atan2(dy, dx), cam.angle) > C.cameraConeHalfAngle) return false;
-    return !GV.world.lineBlocked(cam.x, cam.y, thiefX, thiefY);
-  }
-
-  return {
-    createCameras: createCameras,
-    updateCameras: updateCameras,
-    cameraSeesThief: cameraSeesThief,
-  };
-})();
+function cameraSees(c) {
+  const p = S.player;
+  if (p.inVent) return false;
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  const d = Math.hypot(dx, dy);
+  const range = CFG.cameraRange * (p.sneaking ? CFG.sneakRangeMul : 1);
+  if (d > range) return false;
+  const ang = Math.atan2(dy, dx);
+  if (Math.abs(angleDiff(ang, cameraDir(c))) > CFG.cameraHalfAngle) return false;
+  if (!losClear(c.x, c.y, p.x, p.y)) return false;
+  if (blockedBySmoke(c.x, c.y, p.x, p.y)) return false;
+  return true;
+}

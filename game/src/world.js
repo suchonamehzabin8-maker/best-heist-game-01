@@ -1,198 +1,168 @@
-'use strict';
-/* The museum gallery: walls, display cases, pillars, the vent crawl,
-   the loot, the gem case and the getaway door. This file owns the
-   room's geometry, collision and line-of-sight tests. */
-var GV = window.GV || (window.GV = {});
+// The Gilded Vault — the room: walls, display cases, the vent crawl,
+// the gem case, the getaway door, and the geometry helpers (collision,
+// line of sight) every other module uses.
 
-GV.world = (function () {
-  var C = GV.config;
+// Room bounds (the outer walls form a rectangle).
+const ROOM = { x: 40, y: 40, w: 1200, h: 640 };
 
-  /* Play area inside the outer walls (the HUD strip sits above it). */
-  var ROOM = { x: 16, y: 72, w: 1248, h: 640 };
+// Display cases: solid cover that blocks movement AND sight.
+const CASES = [
+  { x: 300, y: 180, w: 140, h: 70, label: 'Egypt' },
+  { x: 760, y: 180, w: 140, h: 70, label: 'Rome' },
+  { x: 300, y: 420, w: 140, h: 70, label: 'Jade' },
+  { x: 760, y: 420, w: 140, h: 70, label: 'Silk' },
+  { x: 560, y: 300, w: 160, h: 60, label: 'Crown' },
+  { x: 1050, y: 420, w: 90, h: 110, label: 'Masks' },
+];
 
-  /* Solid rectangles the thief and guards walk around. */
-  var walls = [
-    /* Right-hand partition: makes the camera corridor along the east wall. */
-    { x: 1052, y: 200, w: 16, h: 200 },
-    { x: 1052, y: 470, w: 16, h: 90 },
-    /* Low partition in the north-west room, with a doorway gap. */
-    { x: 120, y: 296, w: 180, h: 16 },
-    { x: 360, y: 296, w: 120, h: 16 },
+// The vent crawl: a duct along the top wall. Inside it the thief is hidden
+// and slow. Its lower wall has a gap at each end; the left gap is a one-way
+// hatch (you can crawl in, but you cannot crawl back out through it).
+const VENT = { x: 120, y: 52, w: 440, h: 34 };
+const VENT_ENTRY = { x: 120, y: 86, w: 50, h: 10 }; // left gap (one-way in)
+const VENT_EXIT = { x: 510, y: 86, w: 50, h: 10 }; // right gap (out, by the gem)
+// The solid stretch of the vent's lower wall between the two gaps.
+const VENT_WALL = { x: 170, y: 86, w: 340, h: 10 };
+
+// The gem case (glass, locked) and the gem itself.
+const GEM_CASE = { x: 600, y: 96, w: 80, h: 54 };
+const GEM = { x: 640, y: 123 };
+
+// The getaway door, on the right wall near the bottom.
+const EXIT = { x: 1200, y: 600, w: 40, h: 80 };
+
+// Where the thief starts: the service entrance, bottom-left.
+const START = { x: 100, y: 620 };
+
+// Warm lamp pools (visual only).
+const LAMPS = [
+  { x: 320, y: 150 },
+  { x: 960, y: 150 },
+  { x: 320, y: 560 },
+  { x: 960, y: 560 },
+];
+
+// ---- geometry -------------------------------------------------------------
+
+function pointInRect(x, y, r) {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+function circleHitsRect(cx, cy, cr, r) {
+  const nx = Math.max(r.x, Math.min(cx, r.x + r.w));
+  const ny = Math.max(r.y, Math.min(cy, r.y + r.h));
+  const dx = cx - nx;
+  const dy = cy - ny;
+  return dx * dx + dy * dy < cr * cr;
+}
+
+// All solid rectangles for a given moment. The vent's one-way hatch is solid
+// only while the thief is inside the duct (so you cannot slip back out the
+// way you came in); the vent wall and the duct's far side are always solid
+// from the room side because the duct is entered through its gaps.
+function solidRects() {
+  const rects = [
+    // Outer walls (as four bars, so the doorway gaps are real openings).
+    { x: ROOM.x - 14, y: ROOM.y - 14, w: ROOM.w + 28, h: 14 }, // top
+    { x: ROOM.x - 14, y: ROOM.y + ROOM.h, w: ROOM.w + 28, h: 14 }, // bottom
+    { x: ROOM.x - 14, y: ROOM.y, w: 14, h: ROOM.h }, // left
+    { x: ROOM.x + ROOM.w, y: ROOM.y, w: 14, h: ROOM.h }, // right
+    VENT_WALL,
+    GEM_CASE,
   ];
+  for (const c of CASES) rects.push(c);
+  if (S.player.inVent) rects.push({ x: VENT_ENTRY.x, y: VENT_ENTRY.y, w: VENT_ENTRY.w, h: VENT_ENTRY.h });
+  return rects;
+}
 
-  /* Glass display cases: cover that blocks sight and movement. */
-  var cases = [
-    { x: 220, y: 220, w: 150, h: 70, label: 'Porcelain' },
-    { x: 420, y: 480, w: 170, h: 70, label: 'Tapestry' },
-    { x: 700, y: 250, w: 150, h: 70, label: 'Armour' },
-    { x: 880, y: 500, w: 170, h: 70, label: 'Manuscripts' },
+// Rectangles that block a viewer's line of sight.
+function losBlockers() {
+  const rects = [GEM_CASE];
+  for (const c of CASES) rects.push(c);
+  rects.push(VENT_WALL);
+  return rects;
+}
+
+// Move a circle (the thief) by (dx, dy) with sliding along solids.
+function moveCircle(p, dx, dy) {
+  const r = CFG.playerRadius;
+  let nx = p.x + dx;
+  let ny = p.y + dy;
+  const solids = solidRects();
+  // X axis first, then Y, so the thief slides along walls.
+  let blocked = false;
+  for (const s of solids) {
+    if (circleHitsRect(nx, p.y, r, s)) { blocked = true; break; }
+  }
+  if (!blocked) p.x = nx;
+  blocked = false;
+  for (const s of solids) {
+    if (circleHitsRect(p.x, ny, r, s)) { blocked = true; break; }
+  }
+  if (!blocked) p.y = ny;
+}
+
+// Whether a point is inside the vent duct (hidden, slow).
+function inVentAt(x, y) {
+  return pointInRect(x, y, VENT);
+}
+
+// Segment (x1,y1)-(x2,y2) against one rectangle: true when it crosses it.
+function segmentHitsRect(x1, y1, x2, y2, r) {
+  if (pointInRect(x1, y1, r) || pointInRect(x2, y2, r)) return true;
+  const edges = [
+    [r.x, r.y, r.x + r.w, r.y],
+    [r.x + r.w, r.y, r.x + r.w, r.y + r.h],
+    [r.x + r.w, r.y + r.h, r.x, r.y + r.h],
+    [r.x, r.y + r.h, r.x, r.y],
   ];
-
-  /* Round marble pillars. */
-  var pillars = [
-    { x: 320, y: 400, r: 26 },
-    { x: 640, y: 400, r: 26 },
-    { x: 940, y: 360, r: 26 },
-    { x: 480, y: 610, r: 26 },
-    { x: 800, y: 610, r: 26 },
-  ];
-
-  /* Warm lamp pools that light the floor. */
-  var lamps = [
-    { x: 320, y: 300, r: 130 },
-    { x: 640, y: 520, r: 140 },
-    { x: 960, y: 300, r: 130 },
-    { x: 1160, y: 150, r: 120 },
-  ];
-
-  /* The vent crawl: a grated duct along the top wall. Inside it the
-     thief is hidden from every cone, but moves slowly. */
-  var vent = { x: 40, y: 84, w: 1200, h: 40 };
-  var ventGrates = [
-    { x: 80, y: 104 },
-    { x: 600, y: 104 },
-    { x: 1180, y: 104 },
-  ];
-
-  /* Small loot the thief can sweep up by walking over it. */
-  var lootItems = [
-    { id: 'purse', name: 'Coin Purse', x: 180, y: 150, value: C.purseValue, taken: false, colour: '#e8b64c' },
-    { id: 'vase', name: 'Golden Vase', x: 200, y: 640, value: C.vaseValue, taken: false, colour: '#f0c75e' },
-    { id: 'statue', name: 'Jade Statue', x: 1160, y: 640, value: C.statueValue, taken: false, colour: '#7fd6a4' },
-  ];
-
-  /* The Meridian Star, in its locked glass case at the north wall. */
-  var gemCase = { x: 595, y: 140, w: 90, h: 54, locked: true };
-  var gem = { x: 640, y: 167, value: C.gemValue, taken: false };
-
-  var entryPoint = { x: 70, y: 680 };
-  var exitDoor = { x: 1160, y: 664, w: 96, h: 40 };
-
-  function rects() {
-    return walls.concat(cases).concat([gemCase]);
+  for (const [ax, ay, bx, by] of edges) {
+    if (segmentsCross(x1, y1, x2, y2, ax, ay, bx, by)) return true;
   }
+  return false;
+}
 
-  function clampToRoom(p, radius) {
-    p.x = Math.max(ROOM.x + radius, Math.min(ROOM.x + ROOM.w - radius, p.x));
-    p.y = Math.max(ROOM.y + radius, Math.min(ROOM.y + ROOM.h - radius, p.y));
+function segmentsCross(x1, y1, x2, y2, x3, y3, x4, y4) {
+  const d1 = (x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3);
+  const d2 = (x4 - x3) * (y2 - y3) - (y4 - y3) * (x2 - x3);
+  const d3 = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
+  const d4 = (x2 - x1) * (y4 - y1) - (y2 - y1) * (x4 - x1);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+// Is the view from (x1,y1) to (x2,y2) clear of cases and the vent wall?
+function losClear(x1, y1, x2, y2) {
+  for (const r of losBlockers()) {
+    if (segmentHitsRect(x1, y1, x2, y2, r)) return false;
   }
+  return true;
+}
 
-  /* Push a circle out of every solid rectangle and pillar. */
-  function collideCircle(p, radius) {
-    clampToRoom(p, radius);
-    var solids = rects();
-    for (var i = 0; i < solids.length; i++) {
-      var r = solids[i];
-      var nearestX = Math.max(r.x, Math.min(p.x, r.x + r.w));
-      var nearestY = Math.max(r.y, Math.min(p.y, r.y + r.h));
-      var dx = p.x - nearestX;
-      var dy = p.y - nearestY;
-      var distSq = dx * dx + dy * dy;
-      if (distSq < radius * radius) {
-        if (distSq === 0) {
-          p.y = r.y - radius;
-        } else {
-          var dist = Math.sqrt(distSq);
-          p.x = nearestX + (dx / dist) * radius;
-          p.y = nearestY + (dy / dist) * radius;
-        }
-      }
-    }
-    for (var j = 0; j < pillars.length; j++) {
-      var pil = pillars[j];
-      var px = p.x - pil.x;
-      var py = p.y - pil.y;
-      var dSq = px * px + py * py;
-      var minDist = radius + pil.r;
-      if (dSq < minDist * minDist && dSq > 0) {
-        var d = Math.sqrt(dSq);
-        p.x = pil.x + (px / d) * minDist;
-        p.y = pil.y + (py / d) * minDist;
-      }
-    }
+// Does the view cross a smoke cloud? A cloud blocks sight through it.
+function blockedBySmoke(x1, y1, x2, y2) {
+  for (const s of S.smokes) {
+    if (segmentHitsCircle(x1, y1, x2, y2, s.x, s.y, s.r)) return true;
   }
+  return false;
+}
 
-  /* True when the segment between two points crosses a wall, a case or
-     a pillar: what a vision cone cannot see through. */
-  function segmentHitsRect(x1, y1, x2, y2, r) {
-    var minX = Math.min(x1, x2);
-    var maxX = Math.max(x1, x2);
-    var minY = Math.min(y1, y2);
-    var maxY = Math.max(y1, y2);
-    if (maxX < r.x || minX > r.x + r.w || maxY < r.y || minY > r.y + r.h) return false;
-    /* Sample the segment: cheap and exact enough for cone checks. */
-    var steps = 24;
-    for (var i = 1; i < steps; i++) {
-      var t = i / steps;
-      var px = x1 + (x2 - x1) * t;
-      var py = y1 + (y2 - y1) * t;
-      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return true;
-    }
-    return false;
-  }
+function segmentHitsCircle(x1, y1, x2, y2, cx, cy, cr) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((cx - x1) * dx + (cy - y1) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  const ddx = px - cx;
+  const ddy = py - cy;
+  return ddx * ddx + ddy * ddy < cr * cr;
+}
 
-  function segmentHitsCircle(x1, y1, x2, y2, c) {
-    var dx = x2 - x1;
-    var dy = y2 - y1;
-    var lenSq = dx * dx + dy * dy;
-    if (lenSq === 0) return false;
-    var t = ((c.x - x1) * dx + (c.y - y1) * dy) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    var px = x1 + dx * t;
-    var py = y1 + dy * t;
-    var ddx = px - c.x;
-    var ddy = py - c.y;
-    return ddx * ddx + ddy * ddy < c.r * c.r;
-  }
-
-  function lineBlocked(x1, y1, x2, y2) {
-    var solids = rects();
-    for (var i = 0; i < solids.length; i++) {
-      if (segmentHitsRect(x1, y1, x2, y2, solids[i])) return true;
-    }
-    for (var j = 0; j < pillars.length; j++) {
-      if (segmentHitsCircle(x1, y1, x2, y2, pillars[j])) return true;
-    }
-    return false;
-  }
-
-  function inVent(x, y) {
-    return x >= vent.x && x <= vent.x + vent.w && y >= vent.y && y <= vent.y + vent.h;
-  }
-
-  function nearGemCase(x, y) {
-    return Math.abs(x - gem.x) < 95 && Math.abs(y - gem.y) < 80;
-  }
-
-  function atExit(x, y) {
-    return x >= exitDoor.x && x <= exitDoor.x + exitDoor.w &&
-      y >= exitDoor.y - 10 && y <= exitDoor.y + exitDoor.h + 10;
-  }
-
-  function resetLoot() {
-    for (var i = 0; i < lootItems.length; i++) lootItems[i].taken = false;
-    gem.taken = false;
-    gemCase.locked = true;
-  }
-
-  return {
-    room: ROOM,
-    walls: walls,
-    cases: cases,
-    pillars: pillars,
-    lamps: lamps,
-    vent: vent,
-    ventGrates: ventGrates,
-    lootItems: lootItems,
-    gemCase: gemCase,
-    gem: gem,
-    entryPoint: entryPoint,
-    exitDoor: exitDoor,
-    collideCircle: collideCircle,
-    lineBlocked: lineBlocked,
-    inVent: inVent,
-    nearGemCase: nearGemCase,
-    atExit: atExit,
-    resetLoot: resetLoot,
-  };
-})();
+// Angle difference wrapped to [-PI, PI].
+function angleDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}

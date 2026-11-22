@@ -1,249 +1,241 @@
-'use strict';
-/* The Gilded Vault — game loop and state machine.
-   Phases: menu, playing, caught, win. The loop updates the thief,
-   guards, cameras, tools and alarm, then draws one frame. */
-var GV = window.GV || (window.GV = {});
+// The Gilded Vault — game loop and state machine.
+// Menu -> playing -> (caught | win), R restarts, Enter starts.
 
-GV.main = (function () {
-  var C = GV.config;
+let canvas = null;
+let lastTs = 0;
+let selfTestMode = false;
 
-  var canvas;
-  var ctx;
-  var state;
+function resetGame() {
+  S.state = 'playing';
+  S.t = 0;
+  S.time = 0;
+  S.alarm = 0;
+  S.spotted = false;
+  S.ghost = true;
+  S.grace = 0;
+  S.graceActive = false;
+  S.wasSeen = false;
+  S.player.x = START.x;
+  S.player.y = START.y;
+  S.player.dir = -Math.PI / 2;
+  S.player.moving = false;
+  S.player.sneaking = false;
+  S.player.inVent = false;
+  S.gemTaken = false;
+  S.lockpick = 0;
+  S.tools.smoke = CFG.smokeCount;
+  S.tools.coins = CFG.coinCount;
+  S.smokes = [];
+  S.coins = [];
+  S.guards = makeGuards();
+  S.cameras = makeCameras();
+  S.message = '';
+  S.messageT = 0;
+  S.score = null;
+  S.frozen = false;
+  S.stepAcc = 0;
+  S.nearCone = false;
+}
 
-  function newThief() {
-    return {
-      x: GV.world.entryPoint.x,
-      y: GV.world.entryPoint.y,
-      facing: 0,
-      moving: false,
-      sneaking: false,
-      stepTimer: 0,
-    };
-  }
+function computeScore() {
+  const seconds = Math.floor(S.time);
+  const timeBonus = Math.max(0, CFG.timeBonusCap - seconds) * CFG.timeBonusPerSec;
+  const ghostBonus = S.ghost ? CFG.ghostBonus : 0;
+  return { loot: CFG.gemValue, timeBonus, ghostBonus, total: CFG.gemValue + timeBonus + ghostBonus, seconds };
+}
 
-  function newState() {
-    return {
-      phase: 'menu',
-      time: 0,
-      elapsed: 0,
-      thief: newThief(),
-      guards: GV.guards.createGuards(),
-      cameras: GV.cameras.createCameras(),
-      tools: GV.tools.createTools(),
-      alarm: GV.alarm.createAlarm(),
-      lootValue: 0,
-      score: null,
-      frozen: false,
-      frozenTime: 0,
-    };
-  }
+function update(dt) {
+  S.t += dt;
+  if (S.state === 'playing') S.time += dt;
 
-  function computeScore(s) {
-    var timeBonus = Math.max(0, Math.round((C.parSeconds - s.elapsed) * C.timeBonusPerSec));
-    var ghostBonus = s.alarm.everSpotted ? 0 : C.ghostBonus;
-    return {
-      loot: s.lootValue,
-      timeBonus: timeBonus,
-      ghostBonus: ghostBonus,
-      total: s.lootValue + timeBonus + ghostBonus,
-    };
-  }
+  // Tools and timers.
+  updateTools(dt);
+  if (S.messageT > 0) S.messageT -= dt;
 
-  function resetRun() {
-    GV.world.resetLoot();
-    var fresh = newState();
-    fresh.phase = 'playing';
-    state.thief = fresh.thief;
-    state.guards = fresh.guards;
-    state.cameras = fresh.cameras;
-    state.tools = fresh.tools;
-    state.alarm = fresh.alarm;
-    state.elapsed = 0;
-    state.lootValue = 0;
-    state.score = null;
-    state.phase = 'playing';
-  }
+  // Guards and cameras keep sweeping.
+  updateGuards(dt);
 
-  function startGame() {
-    GV.audio.unlock();
-    resetRun();
-  }
+  if (S.state !== 'playing') return;
 
-  function updateThief(dt) {
-    var thief = state.thief;
-    var move = GV.input.moveVector();
-    thief.sneaking = GV.input.sneaking();
-    var speed = thief.sneaking ? C.thiefSneakSpeed : C.thiefSpeed;
-    if (GV.world.inVent(thief.x, thief.y)) speed *= C.ventSpeedFactor;
-    thief.moving = move.x !== 0 || move.y !== 0;
-    if (thief.moving) {
-      thief.facing = Math.atan2(move.y, move.x);
-      thief.x += move.x * speed * dt;
-      thief.y += move.y * speed * dt;
-      GV.world.collideCircle(thief, C.thiefRadius);
-      /* Soft footsteps. */
-      thief.stepTimer -= dt;
-      if (thief.stepTimer <= 0) {
-        GV.audio.footstep();
-        thief.stepTimer = thief.sneaking ? 0.55 : 0.34;
-      }
+  // Player movement.
+  const v = inputVector();
+  const p = S.player;
+  p.sneaking = !!(keys['ShiftLeft'] || keys['ShiftRight']);
+  const inVent = inVentAt(p.x, p.y);
+  p.inVent = inVent;
+  const speed = inVent ? CFG.ventSpeed : p.sneaking ? CFG.sneakSpeed : CFG.walkSpeed;
+  const moving = v.x !== 0 || v.y !== 0;
+  p.moving = moving;
+  if (moving) {
+    // Picking the lock roots the thief: moving cancels the channel.
+    if (S.lockpick > 0) S.lockpick = 0;
+    moveCircle(p, v.x * speed * dt, v.y * speed * dt);
+    p.dir = Math.atan2(v.y, v.x);
+    S.stepAcc += dt;
+    if (S.stepAcc > 0.34) {
+      S.stepAcc = 0;
+      playStep();
     }
   }
 
-  function updateLoot() {
-    var thief = state.thief;
-    for (var i = 0; i < GV.world.lootItems.length; i++) {
-      var item = GV.world.lootItems[i];
-      if (item.taken) continue;
-      var dx = thief.x - item.x;
-      var dy = thief.y - item.y;
-      if (dx * dx + dy * dy < 30 * 30) {
-        item.taken = true;
-        state.lootValue += item.value;
-        GV.audio.pickup();
-      }
-    }
+  // Lockpick: hold E by the gem case.
+  updateLockpick(dt, !!keys['KeyE']);
+
+  // Smoke on Q, coin on F.
+  if (keys['KeyQ']) {
+    keys['KeyQ'] = false; // single press
+    throwSmoke();
+  }
+  if (keys['KeyF']) {
+    keys['KeyF'] = false;
+    throwCoin(mouse.x, mouse.y);
+  }
+  if (mouse.clicked) {
+    mouse.clicked = false;
+    throwCoin(mouse.x, mouse.y);
   }
 
-  function anySeesThief() {
-    var thief = state.thief;
-    var inVent = GV.world.inVent(thief.x, thief.y);
-    var inSmoke = GV.tools.inSmoke(state.tools, thief.x, thief.y);
-    for (var i = 0; i < state.guards.length; i++) {
-      if (GV.guards.guardSeesThief(state.guards[i], thief.x, thief.y, inSmoke, inVent)) return true;
-    }
-    for (var j = 0; j < state.cameras.length; j++) {
-      if (GV.cameras.cameraSeesThief(state.cameras[j], thief.x, thief.y, inSmoke, inVent)) return true;
-    }
-    return false;
+  // Who sees the thief?
+  let seenByGuard = false;
+  let seenByCamera = false;
+  let nearCone = false;
+  for (const g of S.guards) {
+    if (guardSees(g)) seenByGuard = true;
+    const d = Math.hypot(p.x - g.x, p.y - g.y);
+    if (d < CFG.guardRange + 40) nearCone = true;
+  }
+  for (const c of S.cameras) {
+    if (cameraSees(c)) seenByCamera = true;
+    const d = Math.hypot(p.x - c.x, p.y - c.y);
+    if (d < CFG.cameraRange + 40) nearCone = true;
+  }
+  S.nearCone = nearCone;
+  updateAlarm(dt, seenByGuard, seenByCamera);
+  updateSiren();
+
+  // Win: gem in hand and standing at the getaway door.
+  if (S.gemTaken && pointInRect(p.x, p.y, { x: EXIT.x - 10, y: EXIT.y - 10, w: EXIT.w + 20, h: EXIT.h + 20 })) {
+    S.state = 'win';
+    S.score = computeScore();
+    playWin();
+  }
+}
+
+function frame(ts) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0.016);
+  lastTs = ts;
+  if (!S.frozen) update(dt);
+  render();
+}
+
+function startGame() {
+  canvas = document.getElementById('game');
+  initRender(canvas);
+  initInput(canvas);
+  S.guards = makeGuards();
+  S.cameras = makeCameras();
+
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
+  const selfTest = params.get('selftest');
+
+  if (shot) {
+    applyShot(shot);
+    render();
+    requestAnimationFrame(frame);
+    return;
   }
 
-  function update(dt) {
-    state.time += dt;
-    if (state.phase === 'menu') {
-      /* The menu shows the gallery alive behind it. */
-      GV.guards.updateGuards(state.guards, dt, state.time);
-      GV.cameras.updateCameras(state.cameras, state.time);
-      var click = GV.input.consumeClick();
-      if (click) {
-        var bx = C.canvasWidth / 2;
-        if (click.x >= bx - 130 && click.x <= bx + 130 && click.y >= 450 && click.y <= 506) {
-          startGame();
-        }
-      }
-      if (GV.input.pressed('Enter')) startGame();
-      return;
-    }
-    if (state.phase !== 'playing') {
-      /* R runs the heist again after a catch or a getaway. */
-      if ((state.phase === 'caught' || state.phase === 'win') && GV.input.pressed('KeyR')) {
-        GV.input.keys.KeyR = false;
-        startGame();
-      }
-      return;
-    }
-
-    state.elapsed += dt;
-    updateThief(dt);
-    GV.guards.updateGuards(state.guards, dt, state.time);
-    GV.cameras.updateCameras(state.cameras, state.time);
-    GV.tools.updateTools(state.tools, dt);
-
-    /* Tools on their keys. */
-    if (GV.input.pressed('KeyQ')) {
-      if (GV.tools.throwSmoke(state.tools, state.thief)) GV.input.keys.KeyQ = false;
-    }
-    if (GV.input.pressed('KeyF')) {
-      var landing = GV.tools.throwCoin(state.tools, state.thief);
-      if (landing) {
-        GV.guards.alertNearest(state.guards, landing.x, landing.y, 340);
-        GV.input.keys.KeyF = false;
-      }
-    }
-    var pick = GV.tools.updateLockpick(state.tools, state.thief, state.guards, dt);
-    if (pick === 'picked') state.lootValue += GV.world.gem.value;
-
-    updateLoot();
-
-    var seen = anySeesThief();
-    var wasSpotted = state.alarm.spotted;
-    GV.alarm.updateAlarm(state.alarm, seen, state.thief.sneaking, dt);
-    if (state.alarm.spotted && !wasSpotted) GV.audio.spotted();
-    GV.audio.heartbeat(state.alarm.value, dt);
-
-    if (state.alarm.caught) {
-      state.phase = 'caught';
-      GV.audio.caught();
-      return;
-    }
-
-    /* Getaway: the gem in hand, reach the door. */
-    if (GV.world.gem.taken && GV.world.atExit(state.thief.x, state.thief.y)) {
-      state.score = computeScore(state);
-      state.phase = 'win';
-      GV.audio.win();
-    }
+  if (selfTest) {
+    selfTestMode = true;
+    runSelfTest();
+    return;
   }
 
-  function frame(timestamp) {
-    var now = timestamp / 1000;
-    var dt = Math.min(0.05, now - (frame.last || now));
-    frame.last = now;
-    if (!state.frozen) update(dt);
-    var time = state.frozen ? state.frozenTime : state.time;
-    GV.render.draw(ctx, state, time);
-    window.requestAnimationFrame(frame);
-  }
-
-  function boot() {
-    canvas = document.getElementById('game');
-    ctx = canvas.getContext('2d');
-    state = newState();
-    GV.input.attach(canvas);
-    /* A staged screenshot freezes the loop on one chosen moment. */
-    var shot = GV.shots.shotFromUrl();
-    if (shot) {
-      state.phase = 'playing';
-      GV.shots.applyShot(state, shot);
+  window.addEventListener('keydown', (e) => {
+    ensureAudio();
+    if (S.state === 'menu' && (e.code === 'Enter' || e.code === 'Space')) {
+      resetGame();
+    } else if ((S.state === 'caught' || S.state === 'win') && e.code === 'KeyR') {
+      resetGame();
     }
-    window.requestAnimationFrame(frame);
-  }
+  });
+  canvas.addEventListener('mousedown', () => {
+    ensureAudio();
+    if (S.state === 'menu') resetGame();
+  });
 
-  /* Debug handle for playtesting: state, alarm and positions. */
-  function debugSnapshot() {
-    return {
-      phase: state.phase,
-      alarm: Math.round(state.alarm.value * 10) / 10,
-      spotted: state.alarm.spotted,
-      everSpotted: state.alarm.everSpotted,
-      thief: { x: Math.round(state.thief.x), y: Math.round(state.thief.y) },
-      gemTaken: GV.world.gem.taken,
-      lootValue: state.lootValue,
-      elapsed: Math.round(state.elapsed * 10) / 10,
-      score: state.score,
-      smokeLeft: state.tools.smokeLeft,
-      coinsLeft: state.tools.coinsLeft,
-      lockpickProgress: Math.round(state.tools.lockpick.progress * 100) / 100,
-    };
-  }
+  requestAnimationFrame(frame);
+}
 
-  window.__vault = {
-    snapshot: debugSnapshot,
-    startGame: startGame,
-    resetRun: resetRun,
-    state: function () {
-      return state;
-    },
-  };
+// Headless self-test: drives the game through scripted inputs and writes
+// the outcome into #selftest for --dump-dom inspection. No real browser
+// interaction needed.
+function runSelfTest() {
+  const out = [];
+  const log = (s) => out.push(s);
+  resetGame();
+  log('start state=' + S.state + ' player=' + S.player.x + ',' + S.player.y);
 
-  return {
-    boot: boot,
-    computeScore: computeScore,
-    newState: newState,
-  };
-})();
+  // Walk right for 2 seconds: the thief must actually move.
+  keys['KeyD'] = true;
+  for (let i = 0; i < 120; i++) update(1 / 60);
+  keys['KeyD'] = false;
+  log('after walk right: x=' + Math.round(S.player.x) + ' (expect > 200)');
 
-window.addEventListener('DOMContentLoaded', function () {
-  GV.main.boot();
-});
+  // Park the guards far away, then pick the lock uninterrupted.
+  for (const gg of S.guards) { gg.x = 100; gg.y = 100; gg.wait = 999; gg.investigate = null; }
+  S.player.x = 640;
+  S.player.y = 185;
+  keys['KeyE'] = true;
+  for (let i = 0; i < 200; i++) update(1 / 60);
+  keys['KeyE'] = false;
+  log('gem taken=' + S.gemTaken + ' lockpick=' + S.lockpick.toFixed(2));
+
+  // Vision check: the thief standing in a guard's cone is seen.
+  resetGame();
+  const g = S.guards[0];
+  g.wait = 999;
+  const dir = guardConeDir(g);
+  S.player.x = g.x + Math.cos(dir) * 60;
+  S.player.y = g.y + Math.sin(dir) * 60;
+  log('guardSees=' + guardSees(g) + ' (expect true)');
+
+  // Alarm rises while seen, and being caught ends the run.
+  S.graceActive = false;
+  S.grace = 0;
+  S.alarm = 0;
+  for (let i = 0; i < 180; i++) updateAlarm(1 / 60, true, false);
+  log('alarm after 3s seen=' + S.alarm.toFixed(1) + ' (expect >20) spotted=' + S.spotted);
+  for (let i = 0; i < 400; i++) updateAlarm(1 / 60, true, false);
+  log('state after long exposure=' + S.state + ' (expect caught)');
+
+  // Win path: gem taken, stand at the exit.
+  resetGame();
+  S.gemTaken = true;
+  S.player.x = 1215;
+  S.player.y = 640;
+  update(1 / 60);
+  log('win state=' + S.state + ' score=' + (S.score ? S.score.total : 'null'));
+
+  // Smoke + coin do not throw.
+  resetGame();
+  throwSmoke();
+  throwCoin(600, 400);
+  update(1 / 60);
+  log('smoke=' + S.smokes.length + ' coins=' + S.coins.length + ' tools=' + S.tools.smoke + '/' + S.tools.coins);
+
+  // Vent hides the thief.
+  resetGame();
+  S.player.x = 300;
+  S.player.y = 69;
+  update(1 / 60);
+  log('inVent=' + S.player.inVent);
+
+  const node = document.getElementById('selftest');
+  if (node) node.textContent = out.join('\n');
+  document.title = 'SELFTEST-DONE';
+}
+
+document.addEventListener('DOMContentLoaded', startGame);
